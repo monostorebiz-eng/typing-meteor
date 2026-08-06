@@ -40,15 +40,40 @@
 
   #keypad {
     flex: 0 0 auto; background: #0a0d1c; border-top: 1px solid rgba(120,160,255,0.25);
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; gap: 5px;
   }
-  #kanaInput {
-    width: 100%; box-sizing: border-box; height: 52px; border-radius: 12px;
-    border: 1px solid rgba(120,160,255,0.4); background: #131628; color: #eef3ff;
-    font-size: 20px; text-align: center; font-family: "Yu Gothic", "Meiryo", sans-serif;
-    touch-action: manipulation;
+  #keypadGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  #keypadRow2 { display: flex; gap: 5px; }
+  .key {
+    position: relative; background: linear-gradient(180deg, #1c2340, #131628);
+    border: 1px solid rgba(120,160,255,0.3); border-radius: 10px;
+    color: #eef3ff; font-family: "Yu Gothic", "Meiryo", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: bold; aspect-ratio: 1.5 / 1;
+    touch-action: none; user-select: none;
   }
-  #kanaInput::placeholder { color: #6f7fb0; }
+  #keypadRow2 .key { flex: 1 1 0; aspect-ratio: auto; height: 46px; }
+  .key .hint {
+    position: absolute; font-size: 10px; font-weight: normal; color: #6f7fb0;
+  }
+  .key .hint.up { top: 3px; left: 50%; transform: translateX(-50%); }
+  .key .hint.right { right: 5px; top: 50%; transform: translateY(-50%); }
+  .key .hint.down { bottom: 3px; left: 50%; transform: translateX(-50%); }
+  .key .hint.left { left: 5px; top: 50%; transform: translateY(-50%); }
+  .key.active { background: linear-gradient(180deg, #2a3560, #1a2040); }
+  .key.toggle.armed {
+    background: linear-gradient(180deg, #6a5620, #4a3c14);
+    border-color: #ffd579; color: #ffd579;
+    box-shadow: 0 0 10px rgba(255, 213, 121, 0.5);
+  }
+  #flickPreview {
+    position: fixed; pointer-events: none; z-index: 50;
+    background: rgba(255, 213, 121, 0.95); color: #1a1a1a;
+    font-weight: bold; font-size: 20px; padding: 6px 12px; border-radius: 8px;
+    transform: translate(-50%, -130%); display: none;
+    font-family: "Yu Gothic", "Meiryo", sans-serif;
+  }
 </style>
 </head>
 <body style="display:flex; flex-direction:column; height:100dvh;">
@@ -63,8 +88,8 @@
     <div id="combo" class="hidden"></div>
     <div id="title" class="overlay">
       <h1>タイピング流星群<br>フリック版</h1>
-      <p>単語の流星が降ってくる。<br>タップすると本物のキーボードが出るので、<br>
-      フリックしてかなを打ち込め！</p>
+      <p>単語の流星が降ってくる。<br>下のキーパッドをフリックして、かなを打ち込め！<br>
+      「゛」「小」は<b>押してから</b>キーをフリックすると濁点・小文字になるよ。</p>
       <p class="press">タップしてスタート</p>
     </div>
     <div id="gameover" class="overlay hidden">
@@ -76,9 +101,10 @@
   </div>
 </div>
 <div id="keypad">
-  <input id="kanaInput" type="text" placeholder="タップしてフリック入力"
-    autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <div id="keypadGrid"></div>
+  <div id="keypadRow2"></div>
 </div>
+<div id="flickPreview"></div>
 <script>
 "use strict";
 const canvas = document.getElementById("game");
@@ -95,6 +121,43 @@ function resize() {
 }
 addEventListener("resize", resize);
 addEventListener("orientationchange", () => setTimeout(resize, 200));
+
+// フリックの行データ: [タップ, 上, 右, 下, 左] （空文字はその方向が存在しないキー）
+// 実機iOSのフリック配列に合わせて、上=う段、右=え段、下=お段、左=い段
+const ROWS = {
+  "あ": ["あ","う","え","お","い"],
+  "か": ["か","く","け","こ","き"],
+  "さ": ["さ","す","せ","そ","し"],
+  "た": ["た","つ","て","と","ち"],
+  "な": ["な","ぬ","ね","の","に"],
+  "は": ["は","ふ","へ","ほ","ひ"],
+  "ま": ["ま","む","め","も","み"],
+  "や": ["や","ゆ","","よ",""],
+  "ら": ["ら","る","れ","ろ","り"],
+  "わ": ["わ","","","",""],
+  "ん": ["ん","","","",""],
+};
+const ROW_ORDER = ["あ","か","さ","た","な","は","ま","や","ら"];
+const DAKUTEN = {
+  "か":"が","き":"ぎ","く":"ぐ","け":"げ","こ":"ご",
+  "さ":"ざ","し":"じ","す":"ず","せ":"ぜ","そ":"ぞ",
+  "た":"だ","ち":"ぢ","つ":"づ","て":"で","と":"ど",
+  "は":"ば","ひ":"び","ふ":"ぶ","へ":"べ","ほ":"ぼ",
+};
+const SMALL = { "つ":"っ", "や":"ゃ", "ゆ":"ゅ", "よ":"ょ" };
+
+let dakutenArmed = false, smallArmed = false;
+
+function resolveChar(base) {
+  if (dakutenArmed && DAKUTEN[base]) { dakutenArmed = false; setToggleUI(); return DAKUTEN[base]; }
+  if (smallArmed && SMALL[base]) { smallArmed = false; setToggleUI(); return SMALL[base]; }
+  return base;
+}
+
+function setToggleUI() {
+  document.getElementById("keyDakuten").classList.toggle("armed", dakutenArmed);
+  document.getElementById("keySmall").classList.toggle("armed", smallArmed);
+}
 
 // 単語プール: tier 0 = 短い, 2 = 長い（漢字とかなのペア）
 const WORD_SOURCE = [
@@ -136,6 +199,7 @@ function reset() {
   meteors = []; particles = []; floaters = [];
   score = 0; combo = 0; maxCombo = 0; kills = 0; level = 1; hp = 5;
   spawnTimer = 0; spawnInterval = 2.6; lockedMeteor = null; shake = 0;
+  dakutenArmed = false; smallArmed = false; setToggleUI();
   updateHud();
 }
 
@@ -236,10 +300,8 @@ function startGame() {
   document.getElementById("hud").classList.remove("hidden");
 }
 
-const kanaInput = document.getElementById("kanaInput");
-document.getElementById("title").addEventListener("pointerdown", () => { if (state !== "play") { startGame(); kanaInput.focus(); } });
-document.getElementById("gameover").addEventListener("pointerdown", () => { if (state !== "play") { startGame(); kanaInput.focus(); } });
-kanaInput.addEventListener("pointerdown", () => { if (state !== "play") startGame(); });
+document.getElementById("title").addEventListener("pointerdown", () => { if (state !== "play") startGame(); });
+document.getElementById("gameover").addEventListener("pointerdown", () => { if (state !== "play") startGame(); });
 
 // かな1文字を入力したときの判定
 function inputKana(ch) {
@@ -271,18 +333,96 @@ function inputKana(ch) {
   }
 }
 
-// ===== 本物のソフトキーボードからの入力を拾う =====
-// フリックで確定したかなは <input> の value に追記されていくので、
-// 前回チェック時から増えた分だけを1文字ずつゲーム側に渡す。
-let prevValue = "";
-kanaInput.addEventListener("input", () => {
-  const val = kanaInput.value;
-  if (val.length > prevValue.length && val.startsWith(prevValue)) {
-    for (const ch of val.slice(prevValue.length)) inputKana(ch);
-  }
-  prevValue = val;
-  if (val.length > 40) { kanaInput.value = ""; prevValue = ""; }
-});
+// ===== キーパッド構築 =====
+const keypadGrid = document.getElementById("keypadGrid");
+const keypadRow2 = document.getElementById("keypadRow2");
+const preview = document.getElementById("flickPreview");
+const TAP_THRESHOLD = 16;
+
+function dirIndexFromDelta(dx, dy) {
+  if (Math.hypot(dx, dy) < TAP_THRESHOLD) return 0;
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 2 : 4;
+  return dy > 0 ? 3 : 1;
+}
+
+function makeRowKey(rowKey, container) {
+  const el = document.createElement("div");
+  el.className = "key";
+  const row = ROWS[rowKey];
+  el.innerHTML =
+    `<span class="center">${row[0]}</span>` +
+    (row[1] ? `<span class="hint up">${row[1]}</span>` : "") +
+    (row[2] ? `<span class="hint right">${row[2]}</span>` : "") +
+    (row[3] ? `<span class="hint down">${row[3]}</span>` : "") +
+    (row[4] ? `<span class="hint left">${row[4]}</span>` : "");
+  container.appendChild(el);
+
+  let start = null;
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    start = { x: e.clientX, y: e.clientY };
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("active");
+    showPreview(e.clientX, e.clientY, row[0]);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const idx = dirIndexFromDelta(e.clientX - start.x, e.clientY - start.y);
+    const ch = row[idx] || row[0];
+    showPreview(e.clientX, e.clientY, resolvePreview(ch));
+  });
+  const finish = (e) => {
+    if (!start) return;
+    const idx = dirIndexFromDelta(e.clientX - start.x, e.clientY - start.y);
+    const base = row[idx];
+    el.classList.remove("active");
+    hidePreview();
+    start = null;
+    if (base) inputKana(resolveChar(base));
+  };
+  el.addEventListener("pointerup", finish);
+  el.addEventListener("pointercancel", () => { start = null; el.classList.remove("active"); hidePreview(); });
+}
+
+function resolvePreview(base) {
+  if (dakutenArmed && DAKUTEN[base]) return DAKUTEN[base];
+  if (smallArmed && SMALL[base]) return SMALL[base];
+  return base;
+}
+
+function showPreview(x, y, text) {
+  preview.style.display = "block";
+  preview.style.left = x + "px";
+  preview.style.top = y + "px";
+  preview.textContent = text;
+}
+function hidePreview() { preview.style.display = "none"; }
+
+for (const k of ROW_ORDER) makeRowKey(k, keypadGrid);
+
+function makeSimpleKey(rowKey, container) {
+  const el = document.createElement("div");
+  el.className = "key";
+  el.textContent = ROWS[rowKey][0];
+  container.appendChild(el);
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); el.classList.add("active"); });
+  el.addEventListener("pointerup", () => { el.classList.remove("active"); inputKana(resolveChar(ROWS[rowKey][0])); });
+  el.addEventListener("pointercancel", () => el.classList.remove("active"));
+}
+makeSimpleKey("わ", keypadRow2);
+makeSimpleKey("ん", keypadRow2);
+
+function makeToggleKey(id, label, container, getArmed, toggle) {
+  const el = document.createElement("div");
+  el.className = "key toggle";
+  el.id = id;
+  el.textContent = label;
+  container.appendChild(el);
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); });
+  el.addEventListener("pointerup", () => { toggle(); setToggleUI(); });
+}
+makeToggleKey("keySmall", "小", keypadRow2, () => smallArmed, () => { smallArmed = !smallArmed; if (smallArmed) dakutenArmed = false; });
+makeToggleKey("keyDakuten", "゛", keypadRow2, () => dakutenArmed, () => { dakutenArmed = !dakutenArmed; if (dakutenArmed) smallArmed = false; });
 
 function update(dt) {
   spawnTimer -= dt;

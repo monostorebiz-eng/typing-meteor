@@ -105,14 +105,22 @@ const gameArea = document.getElementById("gameArea");
 const keypad = document.getElementById("keypad");
 let W, H;
 function resize() {
+  // Safari はツールバーの出し引きで innerHeight が遅れて確定することがあるため、
+  // 可能なら visualViewport の高さを使い、body の高さも JS 側で明示的に固定する。
+  const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+  document.body.style.height = vh + "px";
   W = canvas.width = innerWidth;
-  H = canvas.height = Math.max(220, innerHeight - keypad.offsetHeight);
+  H = canvas.height = Math.max(220, vh - keypad.offsetHeight);
   canvas.style.width = W + "px";
   canvas.style.height = H + "px";
   gameArea.style.height = H + "px";
 }
 addEventListener("resize", resize);
 addEventListener("orientationchange", () => setTimeout(resize, 200));
+if (window.visualViewport) window.visualViewport.addEventListener("resize", resize);
+// 初回描画直後にツールバーの高さが遅れて確定する端末があるため、少し遅れて再計算する
+setTimeout(resize, 100);
+setTimeout(resize, 500);
 
 // フリックの行データ: [タップ, 上, 右, 下, 左] （空文字はその方向が存在しないキー）
 // 実機iOSのフリック配列に合わせて、上=う段、右=え段、下=お段、左=い段

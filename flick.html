@@ -41,10 +41,8 @@
   #keypad {
     flex: 0 0 auto; background: #0a0d1c; border-top: 1px solid rgba(120,160,255,0.25);
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
-    display: flex; flex-direction: column; gap: 5px;
   }
   #keypadGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
-  #keypadRow2 { display: flex; gap: 5px; }
   .key {
     position: relative; background: linear-gradient(180deg, #1c2340, #131628);
     border: 1px solid rgba(120,160,255,0.3); border-radius: 10px;
@@ -53,7 +51,7 @@
     font-size: 22px; font-weight: bold; aspect-ratio: 1.5 / 1;
     touch-action: none; user-select: none;
   }
-  #keypadRow2 .key { flex: 1 1 0; aspect-ratio: auto; height: 46px; }
+  .key.mod { font-size: 18px; color: #ffd579; }
   .key .hint {
     position: absolute; font-size: 10px; font-weight: normal; color: #6f7fb0;
   }
@@ -62,11 +60,6 @@
   .key .hint.down { bottom: 3px; left: 50%; transform: translateX(-50%); }
   .key .hint.left { left: 5px; top: 50%; transform: translateY(-50%); }
   .key.active { background: linear-gradient(180deg, #2a3560, #1a2040); }
-  .key.toggle.armed {
-    background: linear-gradient(180deg, #6a5620, #4a3c14);
-    border-color: #ffd579; color: #ffd579;
-    box-shadow: 0 0 10px rgba(255, 213, 121, 0.5);
-  }
   #flickPreview {
     position: fixed; pointer-events: none; z-index: 50;
     background: rgba(255, 213, 121, 0.95); color: #1a1a1a;
@@ -89,7 +82,7 @@
     <div id="title" class="overlay">
       <h1>タイピング流星群<br>フリック版</h1>
       <p>単語の流星が降ってくる。<br>下のキーパッドをフリックして、かなを打ち込め！<br>
-      「゛」「小」は<b>押してから</b>キーをフリックすると濁点・小文字になるよ。</p>
+      濁点・小文字にしたい時は、<b>打ったあとで</b>「゛」「小」を押してね。</p>
       <p class="press">タップしてスタート</p>
     </div>
     <div id="gameover" class="overlay hidden">
@@ -102,7 +95,6 @@
 </div>
 <div id="keypad">
   <div id="keypadGrid"></div>
-  <div id="keypadRow2"></div>
 </div>
 <div id="flickPreview"></div>
 <script>
@@ -134,8 +126,7 @@ const ROWS = {
   "ま": ["ま","む","め","も","み"],
   "や": ["や","ゆ","","よ",""],
   "ら": ["ら","る","れ","ろ","り"],
-  "わ": ["わ","","","",""],
-  "ん": ["ん","","","",""],
+  "わ": ["わ","ん","","",""],
 };
 const ROW_ORDER = ["あ","か","さ","た","な","は","ま","や","ら"];
 const DAKUTEN = {
@@ -145,19 +136,6 @@ const DAKUTEN = {
   "は":"ば","ひ":"び","ふ":"ぶ","へ":"べ","ほ":"ぼ",
 };
 const SMALL = { "つ":"っ", "や":"ゃ", "ゆ":"ゅ", "よ":"ょ" };
-
-let dakutenArmed = false, smallArmed = false;
-
-function resolveChar(base) {
-  if (dakutenArmed && DAKUTEN[base]) { dakutenArmed = false; setToggleUI(); return DAKUTEN[base]; }
-  if (smallArmed && SMALL[base]) { smallArmed = false; setToggleUI(); return SMALL[base]; }
-  return base;
-}
-
-function setToggleUI() {
-  document.getElementById("keyDakuten").classList.toggle("armed", dakutenArmed);
-  document.getElementById("keySmall").classList.toggle("armed", smallArmed);
-}
 
 // 単語プール: tier 0 = 短い, 2 = 長い（漢字とかなのペア）
 const WORD_SOURCE = [
@@ -194,12 +172,13 @@ const GROUND_H = 56;
 let state = "title"; // title | play | over
 let meteors, particles, floaters, score, combo, maxCombo, kills, level, hp;
 let spawnTimer, spawnInterval, lockedMeteor, shake, lastTime;
+let pendingBase = null; // 「゛」「小」での変換待ちの、まだ確定していないかな
 
 function reset() {
   meteors = []; particles = []; floaters = [];
   score = 0; combo = 0; maxCombo = 0; kills = 0; level = 1; hp = 5;
   spawnTimer = 0; spawnInterval = 2.6; lockedMeteor = null; shake = 0;
-  dakutenArmed = false; smallArmed = false; setToggleUI();
+  pendingBase = null;
   updateHud();
 }
 
@@ -303,31 +282,53 @@ function startGame() {
 document.getElementById("title").addEventListener("pointerdown", () => { if (state !== "play") startGame(); });
 document.getElementById("gameover").addEventListener("pointerdown", () => { if (state !== "play") startGame(); });
 
-// かな1文字を入力したときの判定
-function inputKana(ch) {
+// ===== かな入力の判定 =====
+// 「゛」「小」は打った直後のかなを後から変換する方式（実機のIMEに近い動き）。
+// なので、素の文字が違っても「濁点/小文字にすれば合う」場合は即ミスにせず、
+// 変換キーが来るのを1文字ぶんだけ待つ（pendingBase）。
+function advanceOrKill(m) {
+  m.unitIdx++;
+  if (m.unitIdx >= m.word.units.length) { killMeteor(m); lockedMeteor = null; }
+}
+
+function commitPendingAsMiss() {
+  if (pendingBase !== null) {
+    pendingBase = null;
+    combo = 0; shake = Math.max(shake, 4); updateHud();
+  }
+}
+
+// 素のかな（フリックで出た文字そのまま）を1つ入力する
+function inputKana(base) {
   if (state !== "play") return;
+  if (pendingBase !== null) commitPendingAsMiss();
   if (lockedMeteor && !meteors.includes(lockedMeteor)) lockedMeteor = null;
 
   if (!lockedMeteor) {
-    const candidates = meteors
-      .filter(m => m.word.units[m.unitIdx] === ch)
+    const exact = meteors.filter(m => m.word.units[m.unitIdx] === base).sort((a, b) => b.y - a.y);
+    if (exact.length) { lockedMeteor = exact[0]; advanceOrKill(lockedMeteor); return; }
+    const pendable = meteors
+      .filter(m => DAKUTEN[base] === m.word.units[m.unitIdx] || SMALL[base] === m.word.units[m.unitIdx])
       .sort((a, b) => b.y - a.y);
-    if (candidates.length) {
-      lockedMeteor = candidates[0];
-      lockedMeteor.unitIdx++;
-      if (lockedMeteor.unitIdx >= lockedMeteor.word.units.length) {
-        killMeteor(lockedMeteor); lockedMeteor = null;
-      }
-    } else {
-      combo = 0; shake = Math.max(shake, 4); updateHud();
-    }
+    if (pendable.length) { lockedMeteor = pendable[0]; pendingBase = base; return; }
+    combo = 0; shake = Math.max(shake, 4); updateHud();
     return;
   }
 
   const m = lockedMeteor;
-  if (m.word.units[m.unitIdx] === ch) {
-    m.unitIdx++;
-    if (m.unitIdx >= m.word.units.length) { killMeteor(m); lockedMeteor = null; }
+  const want = m.word.units[m.unitIdx];
+  if (base === want) { advanceOrKill(m); return; }
+  if (DAKUTEN[base] === want || SMALL[base] === want) { pendingBase = base; return; }
+  combo = 0; shake = Math.max(shake, 4); updateHud();
+}
+
+// 「゛」または「小」で、直前に打ったかなを変換して確定する
+function applyModifier(kind) {
+  if (state !== "play" || pendingBase === null || !lockedMeteor) return;
+  const modified = kind === "dakuten" ? DAKUTEN[pendingBase] : SMALL[pendingBase];
+  pendingBase = null;
+  if (modified && modified === lockedMeteor.word.units[lockedMeteor.unitIdx]) {
+    advanceOrKill(lockedMeteor);
   } else {
     combo = 0; shake = Math.max(shake, 4); updateHud();
   }
@@ -335,7 +336,6 @@ function inputKana(ch) {
 
 // ===== キーパッド構築 =====
 const keypadGrid = document.getElementById("keypadGrid");
-const keypadRow2 = document.getElementById("keypadRow2");
 const preview = document.getElementById("flickPreview");
 const TAP_THRESHOLD = 16;
 
@@ -368,8 +368,7 @@ function makeRowKey(rowKey, container) {
   el.addEventListener("pointermove", (e) => {
     if (!start) return;
     const idx = dirIndexFromDelta(e.clientX - start.x, e.clientY - start.y);
-    const ch = row[idx] || row[0];
-    showPreview(e.clientX, e.clientY, resolvePreview(ch));
+    showPreview(e.clientX, e.clientY, row[idx] || row[0]);
   });
   const finish = (e) => {
     if (!start) return;
@@ -378,16 +377,10 @@ function makeRowKey(rowKey, container) {
     el.classList.remove("active");
     hidePreview();
     start = null;
-    if (base) inputKana(resolveChar(base));
+    if (base) inputKana(base);
   };
   el.addEventListener("pointerup", finish);
   el.addEventListener("pointercancel", () => { start = null; el.classList.remove("active"); hidePreview(); });
-}
-
-function resolvePreview(base) {
-  if (dakutenArmed && DAKUTEN[base]) return DAKUTEN[base];
-  if (smallArmed && SMALL[base]) return SMALL[base];
-  return base;
 }
 
 function showPreview(x, y, text) {
@@ -398,31 +391,21 @@ function showPreview(x, y, text) {
 }
 function hidePreview() { preview.style.display = "none"; }
 
-for (const k of ROW_ORDER) makeRowKey(k, keypadGrid);
-
-function makeSimpleKey(rowKey, container) {
+function makeModifierKey(label, onTap) {
   const el = document.createElement("div");
-  el.className = "key";
-  el.textContent = ROWS[rowKey][0];
-  container.appendChild(el);
+  el.className = "key mod";
+  el.textContent = label;
+  keypadGrid.appendChild(el);
   el.addEventListener("pointerdown", (e) => { e.preventDefault(); el.classList.add("active"); });
-  el.addEventListener("pointerup", () => { el.classList.remove("active"); inputKana(resolveChar(ROWS[rowKey][0])); });
+  el.addEventListener("pointerup", () => { el.classList.remove("active"); onTap(); });
   el.addEventListener("pointercancel", () => el.classList.remove("active"));
 }
-makeSimpleKey("わ", keypadRow2);
-makeSimpleKey("ん", keypadRow2);
 
-function makeToggleKey(id, label, container, getArmed, toggle) {
-  const el = document.createElement("div");
-  el.className = "key toggle";
-  el.id = id;
-  el.textContent = label;
-  container.appendChild(el);
-  el.addEventListener("pointerdown", (e) => { e.preventDefault(); });
-  el.addEventListener("pointerup", () => { toggle(); setToggleUI(); });
-}
-makeToggleKey("keySmall", "小", keypadRow2, () => smallArmed, () => { smallArmed = !smallArmed; if (smallArmed) dakutenArmed = false; });
-makeToggleKey("keyDakuten", "゛", keypadRow2, () => dakutenArmed, () => { dakutenArmed = !dakutenArmed; if (dakutenArmed) smallArmed = false; });
+// 配置: あかさ/たなは/まやら/小・わ・゛ の3列4行
+for (const k of ROW_ORDER) makeRowKey(k, keypadGrid);
+makeModifierKey("小", () => applyModifier("small"));
+makeRowKey("わ", keypadGrid);
+makeModifierKey("゛", () => applyModifier("dakuten"));
 
 function update(dt) {
   spawnTimer -= dt;
@@ -504,14 +487,26 @@ function draw(t) {
 
     ctx.font = "14px 'Yu Gothic', 'Meiryo', sans-serif";
     const done = m.word.units.slice(0, m.unitIdx).join("");
-    const rest = m.word.units.slice(m.unitIdx).join("");
-    const wDone = ctx.measureText(done).width, wRest = ctx.measureText(rest).width;
-    const startX = m.x - (wDone + wRest) / 2;
+    const pending = locked && pendingBase ? pendingBase : "";
+    const rest = m.word.units.slice(m.unitIdx + (pending ? 1 : 0)).join("");
+    const wDone = ctx.measureText(done).width;
+    const wPending = ctx.measureText(pending).width;
+    const wRest = ctx.measureText(rest).width;
+    const startX = m.x - (wDone + wPending + wRest) / 2;
     ctx.textAlign = "left";
     ctx.fillStyle = "#ffd579";
     ctx.fillText(done, startX, m.y + 24);
+    if (pending) {
+      ctx.fillStyle = "rgba(255, 213, 121, 0.55)";
+      ctx.fillText(pending, startX + wDone, m.y + 24);
+      ctx.strokeStyle = "rgba(255, 213, 121, 0.55)";
+      ctx.beginPath();
+      ctx.moveTo(startX + wDone, m.y + 27);
+      ctx.lineTo(startX + wDone + wPending, m.y + 27);
+      ctx.stroke();
+    }
     ctx.fillStyle = "rgba(200, 215, 255, 0.85)";
-    ctx.fillText(rest, startX + wDone, m.y + 24);
+    ctx.fillText(rest, startX + wDone + wPending, m.y + 24);
   }
 
   for (const p of particles) {

@@ -23,6 +23,13 @@
   .overlay .big { font-size: 30px; color: #ffd579; }
   .overlay .press { font-size: 18px; color: #dfe6ff; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: 0.25; } }
+  #titleBest { font-size: 14px; color: #7fa0d0; margin: 0; }
+  #highScoreList {
+    width: 100%; max-width: 280px; font-size: 14px; color: #aab6e0;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .hs-row { display: flex; justify-content: space-between; padding: 3px 10px; border-radius: 6px; }
+  .hs-mine { color: #ffd579; font-weight: bold; background: rgba(255, 213, 121, 0.12); }
   #hud {
     position: absolute; top: 14px; left: 0; right: 0;
     display: flex; justify-content: space-between; padding: 0 24px;
@@ -47,12 +54,14 @@
   <div id="title" class="overlay">
     <h1>タイピング流星群</h1>
     <p>単語の流星が降ってくる。<br>ローマ字でタイプして、地上に落ちる前に撃ち落とせ！<br>ミスタイプでコンボが途切れる。地面に落ちるとハートが減る。</p>
+    <p id="titleBest"></p>
     <p class="press">スペースキーでスタート</p>
   </div>
   <div id="gameover" class="overlay hidden">
     <h1>GAME OVER</h1>
     <p class="big" id="finalScore"></p>
     <p id="finalStats"></p>
+    <div id="highScoreList"></div>
     <p class="press">スペースキーでもう一度</p>
   </div>
 </div>
@@ -295,11 +304,43 @@ function updateHud() {
   else comboEl.classList.add("hidden");
 }
 
+// ===== 自己ベストランキング（この端末のブラウザ内に保存） =====
+const HS_KEY = "typingMeteor_highScores_pc";
+
+function loadHighScores() {
+  try { return JSON.parse(localStorage.getItem(HS_KEY)) || []; } catch { return []; }
+}
+
+function saveHighScore(entry) {
+  const list = loadHighScores();
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score);
+  const top = list.slice(0, 5);
+  try { localStorage.setItem(HS_KEY, JSON.stringify(top)); } catch {}
+  return { top, rank: top.indexOf(entry) + 1 };
+}
+
+function renderHighScores(top, rank) {
+  const el = document.getElementById("highScoreList");
+  if (!top.length) { el.innerHTML = ""; return; }
+  el.innerHTML = top.map((e, i) =>
+    `<div class="hs-row${i + 1 === rank ? " hs-mine" : ""}">${i + 1}位　${e.score}点　Lv${e.level}</div>`
+  ).join("");
+}
+
+function updateTitleBest() {
+  const top = loadHighScores();
+  document.getElementById("titleBest").textContent = top.length ? `自己ベスト ${top[0].score}点` : "";
+}
+
 function gameOver() {
   state = "over";
   document.getElementById("finalScore").textContent = "SCORE " + score;
   document.getElementById("finalStats").textContent =
     "撃墜 " + kills + " ／ 最大コンボ " + maxCombo + " ／ 到達レベル " + level;
+  const entry = { score, level, date: Date.now() };
+  const { top, rank } = saveHighScore(entry);
+  renderHighScores(top, rank);
   document.getElementById("gameover").classList.remove("hidden");
   document.getElementById("hud").classList.add("hidden");
 }
@@ -469,6 +510,7 @@ function loop(t) {
   requestAnimationFrame(loop);
 }
 reset();
+updateTitleBest();
 requestAnimationFrame(loop);
 </script>
 </body>

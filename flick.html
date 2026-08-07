@@ -45,13 +45,13 @@
   #keypadGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
   .key {
     position: relative; background: linear-gradient(180deg, #1c2340, #131628);
-    border: 1px solid rgba(120,160,255,0.3); border-radius: 10px;
+    border: 1px solid rgba(120,160,255,0.3); border-radius: 8px;
     color: #eef3ff; font-family: "Yu Gothic", "Meiryo", sans-serif;
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px; font-weight: bold; aspect-ratio: 1.5 / 1;
+    font-size: 19px; font-weight: bold; height: 46px;
     touch-action: none; user-select: none;
   }
-  .key.mod { font-size: 18px; color: #ffd579; }
+  .key.mod { font-size: 15px; color: #ffd579; }
   .key .hint {
     position: absolute; font-size: 10px; font-weight: normal; color: #6f7fb0;
   }
@@ -99,6 +99,16 @@
 <div id="flickPreview"></div>
 <script>
 "use strict";
+// iOS Safari は user-scalable=no でも連打（ダブルタップ）でページがズームすることがあるため、
+// 短い間隔で連続したタップを検知したら明示的にキャンセルする。
+let lastTouchEnd = 0;
+document.addEventListener("touchend", (e) => {
+  const now = Date.now();
+  if (now - lastTouchEnd <= 350) e.preventDefault();
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const gameArea = document.getElementById("gameArea");
@@ -330,10 +340,12 @@ function inputKana(base) {
   combo = 0; shake = Math.max(shake, 4); updateHud();
 }
 
-// 「゛」または「小」で、直前に打ったかなを変換して確定する
-function applyModifier(kind) {
+// 変換キーで、直前に打ったかなを確定する。
+// 1つのかなに濁点と小文字が両方あることはないので、左右どちらのキーを押しても
+// 保留中の文字にとって意味がある方（濁点 or 小文字）を自動で適用する。
+function applyModifier() {
   if (state !== "play" || pendingBase === null || !lockedMeteor) return;
-  const modified = kind === "dakuten" ? DAKUTEN[pendingBase] : SMALL[pendingBase];
+  const modified = DAKUTEN[pendingBase] || SMALL[pendingBase];
   pendingBase = null;
   if (modified && modified === lockedMeteor.word.units[lockedMeteor.unitIdx]) {
     advanceOrKill(lockedMeteor);
@@ -409,11 +421,12 @@ function makeModifierKey(label, onTap) {
   el.addEventListener("pointercancel", () => el.classList.remove("active"));
 }
 
-// 配置: あかさ/たなは/まやら/小・わ・゛ の3列4行
+// 配置: あかさ/たなは/まやら/゛小・わ・゛小 の3列4行
+// 濁点/小文字の変換キーは左右どちらも同じ動作（どちら側が濁点かは機種で違うため）
 for (const k of ROW_ORDER) makeRowKey(k, keypadGrid);
-makeModifierKey("小", () => applyModifier("small"));
+makeModifierKey("゛小", applyModifier);
 makeRowKey("わ", keypadGrid);
-makeModifierKey("゛", () => applyModifier("dakuten"));
+makeModifierKey("゛小", applyModifier);
 
 function update(dt) {
   spawnTimer -= dt;
